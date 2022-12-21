@@ -2,7 +2,6 @@
 #include <iostream>
 #include <thread>
 #include <mutex>
-#include <algorithm>
 #include <cstring>
 #include <queue>
 #include <stack>
@@ -16,7 +15,6 @@
 
 
 namespace fs = std::filesystem;
-
 
 
 class FSTreeNode final
@@ -105,22 +103,14 @@ public:
       dirs.pop();
       if (path_is_regular_directory(dir->path()))
       {
-        try
-        {
-          it_dir = fs::directory_iterator(dir->path());
-        }
-        catch (fs::filesystem_error &fs_error)
-        {
-          std::cerr << fs_error.what() << '\n';
-          continue;
-        }
-        for (auto &it : it_dir)
-        {
-          child = new FSTreeNode(it);
-          dir->append_child(child);
-          if (child->isdir())
-            dirs.push(child);
-        }
+        if (get_directory_iterator(dir, it_dir))
+          for (auto &it : it_dir)
+          {
+            child = new FSTreeNode(it);
+            dir->append_child(child);
+            if (child->isdir())
+              dirs.push(child);
+          }
       }
     }
   }
@@ -200,6 +190,24 @@ private:
   std::mutex output_lock;
 
 
+  bool get_directory_iterator(const FSTreeNode * tree_node, fs::directory_iterator & it)
+  {
+    try
+    {
+      it = fs::directory_iterator(tree_node->path());
+      return true;
+    }
+    catch (fs::filesystem_error & fs_error)
+    {
+      println_thread_safe(std::cerr, fs_error.what());
+    }
+    catch (std::exception & error)
+    {
+      println_thread_safe(std::cerr, error.what());
+    }
+    return false;
+  }
+
   bool should_create_threads(size_t threads=1)
   {
     bool should_create = false;
@@ -228,6 +236,11 @@ private:
     n_threads_lock.unlock();
   }
 
+  size_t get_n_threads() const
+  {
+    return n_threads;
+  }
+
   void println_thread_safe(std::ostream & out, const std::string & string)
   {
     while (not output_lock.try_lock())
@@ -246,6 +259,10 @@ private:
     {
       println_thread_safe(std::cerr, fs_error.what());
     }
+    catch (std::exception & error)
+    {
+      println_thread_safe(std::cerr, error.what());
+    }
     return false;
   }
 
@@ -259,6 +276,10 @@ private:
     {
       println_thread_safe(std::cerr, fs_error.what());
     }
+    catch (std::exception & error)
+    {
+      println_thread_safe(std::cerr, error.what());
+    }
     return false;
   }
 
@@ -271,6 +292,10 @@ private:
     catch (fs::filesystem_error & fs_error)
     {
       println_thread_safe(std::cerr, fs_error.what());
+    }
+    catch (std::exception & error)
+    {
+      println_thread_safe(std::cerr, error.what());
     }
     return false;
   }
@@ -292,13 +317,15 @@ private:
     std::vector<std::thread> children;
 
     srand(time(NULL) + std::hash<std::thread::id>{}(std::this_thread::get_id()));
-    self->n_threads_increment();
 
     dirs.push(&self->m_root);
     while (not dirs.empty())
     {
       auto dir = dirs.front();
       dirs.pop();
+
+      if (self->get_n_threads() > self->n_threads_max)
+        throw std::logic_error("number of threads is over limit");
 
       for (auto entry : dir->children())
       {
@@ -309,16 +336,20 @@ private:
           if (not self->should_create_threads())
             dirs.push(entry);
           else
+          {
+            self->n_threads_increment();
             children.push_back(std::thread(FSTree::_find, self, entry, filename, results));
+          }
           self->n_threads_lock.unlock();
         }
       }
     }
 
     for (size_t i = 0; i < children.size(); i++)
+    {
       children[i].join();
-
-    self->n_threads_decrement();
+      self->n_threads_decrement();
+    }
   }
 };
 
@@ -376,9 +407,6 @@ void process_args(int argc, char *argv[], std::string &filename, fs::path &root,
   const std::string invalid_num_threads_str = "Inavlid --num_threads argument, must be between " +
                                               std::to_string(num_threads_min) + " and " +
                                               std::to_string(num_threads_max);
-  char **args_begin = argv;
-  char **args_end = argv + argc;
-  char **it;
   char *path_cstr;
   char *num_threads_cstr;
 
