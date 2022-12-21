@@ -92,7 +92,7 @@ private:
 class FSTree final
 {
 public:
-  FSTree(const fs::path &root_path, size_t threads_max=10) : m_root(root_path)
+  FSTree(const fs::path &root_path, size_t threads_max=10) : m_root(root_path), n_threads(0), n_threads_max(threads_max)
   {
     std::queue<FSTreeNode *> dirs;
     FSTreeNode *dir, *child;
@@ -185,10 +185,48 @@ public:
     return out;
   }
 
+  std::vector<fs::path> find(const std::string &filename, size_t threads_max=10)
+  {
+    std::vector<fs::path> results;
+    FSTree::_find(this, &m_root, filename, results);
+    return results;
+  }
+
 private:
   FSTreeNode m_root;
+  const size_t n_threads_max;
+  size_t n_threads;
+  std::mutex n_threads_lock;
   std::mutex output_lock;
 
+
+  bool should_create_threads(size_t threads=1)
+  {
+    bool should_create = false;
+
+    while (not n_threads_lock.try_lock())
+      sleep_random_ms(5, 10);
+    if (n_threads + threads <= n_threads_max)
+      should_create = true;
+
+    return should_create;
+  }
+
+  void n_threads_increment()
+  {
+    while (not n_threads_lock.try_lock())
+      sleep_random_ms(5, 10);
+    n_threads++;
+    n_threads_lock.unlock();
+  }
+
+  void n_threads_decrement()
+  {
+    while (not n_threads_lock.try_lock())
+      sleep_random_ms(5, 10);
+    n_threads--;
+    n_threads_lock.unlock();
+  }
 
   void println_thread_safe(std::ostream & out, const std::string & string)
   {
@@ -224,20 +262,185 @@ private:
     return false;
   }
 
+  bool path_filename_equals(const fs::path & path, const std::string & filename)
+  {
+    try
+    {
+      return path.filename().string() == filename;
+    }
+    catch (fs::filesystem_error & fs_error)
+    {
+      println_thread_safe(std::cerr, fs_error.what());
+    }
+    return false;
+  }
+
   void sleep_random_ms(size_t sleep_min, size_t sleep_max)
   {
     const std::chrono::milliseconds ms(sleep_min + rand() % sleep_max);
     std::this_thread::sleep_for(ms);
   }
+
+  static void _find(
+      FSTree * self,
+      const FSTreeNode * root,
+      const std::string & filename,
+      std::vector<fs::path> & results)
+  {
+    std::queue<FSTreeNode *> dirs;
+    fs::path dir;
+    std::vector<std::thread> children;
+
+    srand(time(NULL) + std::hash<std::thread::id>{}(std::this_thread::get_id()));
+    self->n_threads_increment();
+
+    dirs.push(&self->m_root);
+    while (not dirs.empty())
+    {
+      auto dir = dirs.front();
+      dirs.pop();
+
+      for (auto entry : dir->children())
+      {
+        if (self->path_filename_equals(entry->path().filename(), filename))
+          results.push_back(entry->path());
+        if (entry->isdir())
+        {
+          if (not self->should_create_threads())
+            dirs.push(entry);
+          else
+            children.push_back(std::thread(FSTree::_find, self, entry, filename, results));
+          self->n_threads_lock.unlock();
+        }
+      }
+    }
+
+    for (size_t i = 0; i < children.size(); i++)
+      children[i].join();
+
+    self->n_threads_decrement();
+  }
 };
 
 
-int main()
+std::ostream &operator<<(std::ostream &out, const std::vector<fs::path> vector)
 {
-  fs::path root = ".";
+  size_t i = 0;
+  for (i = 0; i + 1 < vector.size(); i++)
+    out << vector[i].string() << "\n";
+  if (i < vector.size())
+    out << vector[i].string();
+  return out;
+}
 
+bool args_contain_option(int argc, char *argv[], const char *option)
+{
+  const size_t option_max = 32;
+
+  for (size_t i = 0; i < argc; i++)
+    if (strncmp(option, argv[i], option_max) == 0)
+      return true;
+  return false;
+}
+
+char *args_get_option_argument(int argc, char *argv[], const char *option)
+{
+  const size_t option_max = 32;
+
+  for (size_t i = 0; i + 1 < argc; i++)
+    if (strncmp(option, argv[i], option_max) == 0)
+      return argv[i + 1];
+
+  return nullptr;
+}
+
+bool cstring_represents_integer(const char *str)
+{
+  const size_t digits_max = 64;
+  size_t i = 0;
+
+  if (str[0] == '+' or str[0] == '-')
+    i++;
+
+  for (; i < digits_max && str[i] != '\0'; i++)
+    if (not isdigit(str[i]))
+      return false;
+  return true;
+}
+
+void process_args(int argc, char *argv[], std::string &filename, fs::path &root, size_t &num_threads)
+{
+  const size_t num_threads_min = 0;
+  const size_t num_threads_max = 200;
+  const char *usage_cstr = "Usage: ./main <filename> [--path <path>] [--num_threads <number>]";
+  const std::string invalid_num_threads_str = "Inavlid --num_threads argument, must be between " +
+                                              std::to_string(num_threads_min) + " and " +
+                                              std::to_string(num_threads_max);
+  char **args_begin = argv;
+  char **args_end = argv + argc;
+  char **it;
+  char *path_cstr;
+  char *num_threads_cstr;
+
+  if (argc == 1)
+  {
+    std::cerr << usage_cstr << std::endl;
+    exit(1);
+  }
+  if (argc == 2)
+  {
+    filename = argv[1];
+    return;
+  }
+
+  filename = argv[1];
+  if (args_contain_option(argc - 2, argv + 2, "--path"))
+  {
+    if ((path_cstr = args_get_option_argument(argc, argv, "--path")) != nullptr)
+      root = path_cstr;
+    else
+    {
+      std::cerr << usage_cstr << std::endl;
+      exit(1);
+    }
+  }
+  if (args_contain_option(argc - 2, argv + 2, "--num_threads"))
+  {
+    if ((num_threads_cstr = args_get_option_argument(argc, argv, "--num_threads")) != nullptr and
+        cstring_represents_integer(num_threads_cstr))
+    {
+      num_threads = atoll(num_threads_cstr);
+      if (not(num_threads_min <= num_threads and num_threads <= num_threads_max))
+      {
+        std::cerr << invalid_num_threads_str << std::endl;
+        exit(1);
+      }
+    }
+    else if (num_threads_cstr == nullptr)
+    {
+      std::cerr << usage_cstr << std::endl;
+      exit(1);
+    }
+    else
+    {
+      std::cerr << invalid_num_threads_str << std::endl;
+      exit(1);
+    }
+  }
+}
+
+
+int main(int argc, char *argv[])
+{
+  fs::path root = "C:\\";
+  std::string filename;
+  size_t num_threads = 0;
+
+  process_args(argc, argv, filename, root, num_threads);
   FSTree fs_tree(root);
-  std::cout << fs_tree << std::endl;
+  std::vector<fs::path> paths = fs_tree.find(filename);
+  std::cerr << "found " << paths.size() << " file(s)" << std::endl;
+  std::cout << paths << std::endl;
 
   return EXIT_SUCCESS;
 }
