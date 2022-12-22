@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.1)
 project(tfind CXX)
-SET(CMAKE_CXX_STANDARD 17)
+SET(CMAKE_CXX_STANDARD 20)
 SET(CMAKE_CXX_STANDARD_REQUIRED ON)
 SET(CMAKE_CXX_FLAGS "-Wall -g3 -O0")
 add_executable(${PROJECT_NAME} main.cpp)

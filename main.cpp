@@ -1,21 +1,120 @@
+#include <chrono>
+#include <cstring>
 #include <filesystem>
 #include <iostream>
-#include <thread>
 #include <mutex>
-#include <cstring>
 #include <queue>
 #include <stack>
 #include <string>
+#include <thread>
 #include <vector>
-#include <chrono>
+#include <locale.h>
 
-#include <iso646.h>
 #include <cstdlib>
 #include <ctime>
+#include <iso646.h>
 
+
+
+#if defined(_WIN32) 
+#define FS_ROOT "C:\\"
+#elif defined(__unix__) or defined(unix) or defined(__unix)
+#define FS_ROOT "/"
+#else
+#error "Unsupported operating system"
+#endif
+
+//Макрос для проверки является ли наша система виндой СВЕРХУ
 
 namespace fs = std::filesystem;
 
+void sleep_random_ms(size_t sleep_min, size_t sleep_max)
+{
+  const std::chrono::milliseconds ms(sleep_min + rand() % sleep_max);
+  std::this_thread::sleep_for(ms);
+}
+
+void println_thread_safe(std::ostream &out, const std::string &string) // Принимает ссылку на поток вывода и строку, которую надо напечатать
+                                                                       // Блокирует mutex, чтобы мог печатать только 1 поток
+                                                                       //Печатает и разблокирует
+{
+  static std::mutex output_lock; // Чтобы мы могли несколько раз вызвать эту функцию используем static
+  std::lock_guard<std::mutex> lock_guard(output_lock); //Объект шаблонного класса lock_guard, который называется lock_guard. Передаём ему mutex ouput_lock
+                                                       //Вызов конструктора
+  out << string << std::endl;
+}
+
+//fs::path &path = Пр-во имён fs, где определён класс path, в котором происходит ссылка &path на объект этого класса, который мы передаём
+
+bool path_get_directory_iterator(const fs::path &path, fs::directory_iterator &it) // Получает итераратор, возвращает true, если удалось его получить
+                                                                                   // Проверка на корректность заданного пути
+{
+  try
+  {
+    it = fs::directory_iterator(path); //Меняем значение объекта, лежащего по ссылке it, на результат созданного объекта конструктором directory_iterator
+    return true;
+  } //directory_iterator - итератор, который позволяет перебрать все объекты в папке
+  catch (fs::filesystem_error &fs_error)
+  {
+    println_thread_safe(std::cerr, fs_error.what());
+  }
+  catch (std::exception &error)
+  {
+    println_thread_safe(std::cerr, error.what());
+  }
+  return false;
+}
+
+bool path_is_regular_directory(const fs::path &path)
+{
+  try
+  {
+    return fs::is_directory(path) and not fs::is_symlink(path);
+  }
+  catch (fs::filesystem_error &fs_error)
+  {
+    println_thread_safe(std::cerr, fs_error.what());
+  }
+  catch (std::exception &error)
+  {
+    println_thread_safe(std::cerr, error.what());
+  }
+  return false;
+}
+
+bool path_is_regular_file(const fs::path &path)
+{
+  try
+  {
+    return fs::is_regular_file(path) and not fs::is_symlink(path);
+  }
+  catch (fs::filesystem_error &fs_error)
+  {
+    println_thread_safe(std::cerr, fs_error.what());
+  }
+  catch (std::exception &error)
+  {
+    println_thread_safe(std::cerr, error.what());
+  }
+  return false;
+}
+
+bool path_filename_equals(const fs::path &path, const std::string &filename) //Сравнение имён файла по заданного пути с переданной строкой
+{
+  try
+  {
+    return path.filename().string() == filename;
+  }
+  catch (fs::filesystem_error &fs_error)
+  {
+    println_thread_safe(std::cerr, fs_error.what());
+  }
+  catch (std::exception &error)
+  {
+    println_thread_safe(std::cerr, error.what());
+  }
+  return false;
+}
 
 class FSTreeNode final
 {
@@ -44,12 +143,13 @@ public:
     }
     catch (fs::filesystem_error &fs_error)
     {
-      std::cerr << fs_error.what() << std::endl;
+      println_thread_safe(std::cerr, fs_error.what());
     }
     catch (std::exception &error)
     {
-      std::cerr << error.what() << std::endl;
+      println_thread_safe(std::cerr, error.what());
     }
+    return false;
   }
 
   bool ishidden() const
@@ -64,7 +164,7 @@ public:
 
   const fs::path &path() const
   {
-    return m_path;
+    return m_path; //Путь который соответствует данному узлу
   }
 
   const std::vector<FSTreeNode *> children() const
@@ -90,27 +190,31 @@ private:
 class FSTree final
 {
 public:
-  FSTree(const fs::path &root_path, size_t threads_max=10) : m_root(root_path), n_threads(0), n_threads_max(threads_max)
+  FSTree(const fs::path &root_path, size_t threads_max = 10)
+      : m_root(root_path), n_threads_max(threads_max), n_threads(0)
   {
     std::queue<FSTreeNode *> dirs;
     FSTreeNode *dir, *child;
     fs::directory_iterator it_dir;
+
+    if (n_threads_max == 0)
+      throw std::logic_error("n_threads_max must be at least 1");
 
     dirs.push(&m_root);
     while (not dirs.empty())
     {
       dir = dirs.front();
       dirs.pop();
-      if (path_is_regular_directory(dir->path()))
+      if (path_is_regular_directory(dir->path()) and path_get_directory_iterator(dir->path(), it_dir))
       {
-        if (get_directory_iterator(dir, it_dir))
-          for (auto &it : it_dir)
-          {
-            child = new FSTreeNode(it);
-            dir->append_child(child);
-            if (child->isdir())
-              dirs.push(child);
-          }
+        for (const fs::directory_entry &it : it_dir) //directory_entry - один элемент папки. 
+                                                     //Перебираем то,что хранится в it_dir и записываем это  в пр-во имён fs класса directory_entry по ссылке it
+        {
+          child = new FSTreeNode(it);
+          dir->append_child(child);
+          if (child->isdir())
+            dirs.push(child);
+        }
       }
     }
   }
@@ -146,8 +250,8 @@ public:
     }
   }
 
-  friend std::ostream &operator<<(std::ostream &out, const FSTree &self)
-  {
+  friend std::ostream &operator<<(std::ostream &out, const FSTree &self) //Дружественная функция, которая возвращает тип ссылки на объект потока вывода и называется <<
+  {                                                                      //Функция печати дерева
     std::queue<const FSTreeNode *> dirs;
     const FSTreeNode *dir;
     fs::directory_iterator it_dir;
@@ -157,28 +261,29 @@ public:
     {
       dir = dirs.front();
       dirs.pop();
+      out << dir->path().string() << "/:\n";
       if (dir->empty())
         continue;
-      out << dir->path().string() << "/:\n";
-      for (auto &child : dir->children())
+      for (const FSTreeNode *const &child : dir->children())
       {
         if (child->ishidden())
           continue;
-        out << '\t' << child->path().filename().string() << '\n';
+        out << child->path().filename().string() << '\t';
         if (child->isdir())
           dirs.push(child);
       }
-      if (dirs.size() != 0)
+      out << '\n';
+      if (not dirs.empty())
         out << '\n';
     }
 
     return out;
   }
 
-  std::vector<fs::path> find(const std::string &filename, size_t threads_max=10)
+  std::vector<fs::path> find(const std::string &filename, size_t threads_max = 10)
   {
     std::vector<fs::path> results;
-    FSTree::_find(this, &m_root, filename, results);
+    _find(this, &m_root, std::cref(filename), std::ref(results));
     return results;
   }
 
@@ -187,175 +292,66 @@ private:
   const size_t n_threads_max;
   size_t n_threads;
   std::mutex n_threads_lock;
-  std::mutex output_lock;
 
-
-  bool get_directory_iterator(const FSTreeNode * tree_node, fs::directory_iterator & it)
-  {
-    try
-    {
-      it = fs::directory_iterator(tree_node->path());
-      return true;
-    }
-    catch (fs::filesystem_error & fs_error)
-    {
-      println_thread_safe(std::cerr, fs_error.what());
-    }
-    catch (std::exception & error)
-    {
-      println_thread_safe(std::cerr, error.what());
-    }
-    return false;
-  }
-
-  bool should_create_threads(size_t threads=1)
-  {
-    bool should_create = false;
-
-    while (not n_threads_lock.try_lock())
-      sleep_random_ms(5, 10);
-    if (n_threads + threads <= n_threads_max)
-      should_create = true;
-
-    return should_create;
-  }
-
-  void n_threads_increment()
+  void assert_n_threads_valid() //Проверяет кол-во потоков. Если оно стало > максимально возможного, то происходит исключение
   {
     while (not n_threads_lock.try_lock())
       sleep_random_ms(5, 10);
-    n_threads++;
+    if (n_threads > n_threads_max)
+      throw std::logic_error("Number of threads is over limit: n_threads == " + std::to_string(n_threads));
     n_threads_lock.unlock();
   }
 
-  void n_threads_decrement()
+  static void _find(FSTree *self, const FSTreeNode *root, const std::string &filename, std::vector<fs::path> &results)
   {
-    while (not n_threads_lock.try_lock())
-      sleep_random_ms(5, 10);
-    n_threads--;
-    n_threads_lock.unlock();
-  }
-
-  size_t get_n_threads() const
-  {
-    return n_threads;
-  }
-
-  void println_thread_safe(std::ostream & out, const std::string & string)
-  {
-    while (not output_lock.try_lock())
-      sleep_random_ms(5, 10);
-    out << string << std::endl;
-    output_lock.unlock();
-  }
-
-  bool path_is_regular_directory(const fs::path & path)
-  {
-    try
-    {
-      return fs::is_directory(path) and not fs::is_symlink(path);
-    }
-    catch (fs::filesystem_error & fs_error)
-    {
-      println_thread_safe(std::cerr, fs_error.what());
-    }
-    catch (std::exception & error)
-    {
-      println_thread_safe(std::cerr, error.what());
-    }
-    return false;
-  }
-
-  bool path_is_regular_file(const fs::path & path)
-  {
-    try
-    {
-      return fs::is_regular_file(path) and not fs::is_symlink(path);
-    }
-    catch (fs::filesystem_error & fs_error)
-    {
-      println_thread_safe(std::cerr, fs_error.what());
-    }
-    catch (std::exception & error)
-    {
-      println_thread_safe(std::cerr, error.what());
-    }
-    return false;
-  }
-
-  bool path_filename_equals(const fs::path & path, const std::string & filename)
-  {
-    try
-    {
-      return path.filename().string() == filename;
-    }
-    catch (fs::filesystem_error & fs_error)
-    {
-      println_thread_safe(std::cerr, fs_error.what());
-    }
-    catch (std::exception & error)
-    {
-      println_thread_safe(std::cerr, error.what());
-    }
-    return false;
-  }
-
-  void sleep_random_ms(size_t sleep_min, size_t sleep_max)
-  {
-    const std::chrono::milliseconds ms(sleep_min + rand() % sleep_max);
-    std::this_thread::sleep_for(ms);
-  }
-
-  static void _find(
-      FSTree * self,
-      const FSTreeNode * root,
-      const std::string & filename,
-      std::vector<fs::path> & results)
-  {
-    std::queue<FSTreeNode *> dirs;
+    static std::mutex results_lock;
+    std::queue<const FSTreeNode *> dirs;
+    std::vector<std::thread> threads;
     fs::path dir;
-    std::vector<std::thread> children;
+
+    //self->assert_n_threads_valid(); -это если захочу проверить не превышается ли кол-во потоков заданный максимум
 
     srand(time(NULL) + std::hash<std::thread::id>{}(std::this_thread::get_id()));
 
-    dirs.push(&self->m_root);
+    dirs.push(root);
     while (not dirs.empty())
     {
       auto dir = dirs.front();
       dirs.pop();
 
-      if (self->get_n_threads() > self->n_threads_max)
-        throw std::logic_error("number of threads is over limit");
-
       for (auto entry : dir->children())
       {
-        if (self->path_filename_equals(entry->path().filename(), filename))
+        if (path_filename_equals(entry->path(), filename))
+        {
+          std::lock_guard<std::mutex> lock_guard(results_lock);
           results.push_back(entry->path());
+        }
         if (entry->isdir())
         {
-          if (not self->should_create_threads())
-            dirs.push(entry);
-          else
+          std::lock_guard<std::mutex> lock_guard(self->n_threads_lock);
+          if (self->n_threads < self->n_threads_max)
           {
-            self->n_threads_increment();
-            children.push_back(std::thread(FSTree::_find, self, entry, filename, results));
+            self->n_threads++;
+            threads.push_back(std::thread(_find, self, entry, std::cref(filename), std::ref(results))); //cref и ref - обёртки, которые возвращают конст и неконст ссылки
           }
-          self->n_threads_lock.unlock();
+          else
+            dirs.push(entry);
         }
       }
     }
 
-    for (size_t i = 0; i < children.size(); i++)
+    for (auto &thread : threads)
     {
-      children[i].join();
-      self->n_threads_decrement();
+      thread.join();
+      std::lock_guard<std::mutex> lock_guard(self->n_threads_lock); //Объект шаблонного класса lock_guard, который называется lock_guard. Передаём ему mutex self->n_threads_lock
+                                                                    //self->n_threads_lock = поле объекта (переменная, принадлежащая этому объекту), на который указывает self
+      self->n_threads--; 
     }
   }
 };
 
-
-std::ostream &operator<<(std::ostream &out, const std::vector<fs::path> vector)
-{
+std::ostream &operator<<(std::ostream &out, const std::vector<fs::path> vector) //vector<fs::path> vector = Вектор пр-ва имён путей (вектор путей), имеющий имя vector
+{                                                                               //Вектор пути к файлу (то есть может быть несколько путей, если несколько файлов)
   size_t i = 0;
   for (i = 0; i + 1 < vector.size(); i++)
     out << vector[i].string() << "\n";
@@ -364,28 +360,7 @@ std::ostream &operator<<(std::ostream &out, const std::vector<fs::path> vector)
   return out;
 }
 
-bool args_contain_option(int argc, char *argv[], const char *option)
-{
-  const size_t option_max = 32;
-
-  for (size_t i = 0; i < argc; i++)
-    if (strncmp(option, argv[i], option_max) == 0)
-      return true;
-  return false;
-}
-
-char *args_get_option_argument(int argc, char *argv[], const char *option)
-{
-  const size_t option_max = 32;
-
-  for (size_t i = 0; i + 1 < argc; i++)
-    if (strncmp(option, argv[i], option_max) == 0)
-      return argv[i + 1];
-
-  return nullptr;
-}
-
-bool cstring_represents_integer(const char *str)
+bool cstring_represents_integer(const char *str) //Проверка на то, введено ли в num_threads корректное значение
 {
   const size_t digits_max = 64;
   size_t i = 0;
@@ -393,79 +368,78 @@ bool cstring_represents_integer(const char *str)
   if (str[0] == '+' or str[0] == '-')
     i++;
 
-  for (; i < digits_max && str[i] != '\0'; i++)
+  for (; i < digits_max and str[i] != '\0'; i++)
     if (not isdigit(str[i]))
       return false;
   return true;
 }
 
-void process_args(int argc, char *argv[], std::string &filename, fs::path &root, size_t &num_threads)
+void usage()
 {
-  const size_t num_threads_min = 0;
-  const size_t num_threads_max = 200;
-  const char *usage_cstr = "Usage: ./main <filename> [--path <path>] [--num_threads <number>]";
-  const std::string invalid_num_threads_str = "Inavlid --num_threads argument, must be between " +
-                                              std::to_string(num_threads_min) + " and " +
-                                              std::to_string(num_threads_max);
-  char *path_cstr;
-  char *num_threads_cstr;
-
-  if (argc == 1)
-  {
-    std::cerr << usage_cstr << std::endl;
-    exit(1);
-  }
-  if (argc == 2)
-  {
-    filename = argv[1];
-    return;
-  }
-
-  filename = argv[1];
-  if (args_contain_option(argc - 2, argv + 2, "--path"))
-  {
-    if ((path_cstr = args_get_option_argument(argc, argv, "--path")) != nullptr)
-      root = path_cstr;
-    else
-    {
-      std::cerr << usage_cstr << std::endl;
-      exit(1);
-    }
-  }
-  if (args_contain_option(argc - 2, argv + 2, "--num_threads"))
-  {
-    if ((num_threads_cstr = args_get_option_argument(argc, argv, "--num_threads")) != nullptr and
-        cstring_represents_integer(num_threads_cstr))
-    {
-      num_threads = atoll(num_threads_cstr);
-      if (not(num_threads_min <= num_threads and num_threads <= num_threads_max))
-      {
-        std::cerr << invalid_num_threads_str << std::endl;
-        exit(1);
-      }
-    }
-    else if (num_threads_cstr == nullptr)
-    {
-      std::cerr << usage_cstr << std::endl;
-      exit(1);
-    }
-    else
-    {
-      std::cerr << invalid_num_threads_str << std::endl;
-      exit(1);
-    }
-  }
+  const char *usage_cstr = "Usage: tfind [<OPTIONS>] <filename>\n\t--path\t\t<path from where to start search>\n\t"
+                           "--num_threads\t<maximum number of threads>";
+  std::cerr << usage_cstr << std::endl;
+  exit(1);
 }
 
+void process_args(int argc, char *argv[], std::string &filename, fs::path &root, size_t &num_threads) //argc - кол-во аргументов для работы проги
+                                                                                                      // argv[] - массив чаровских строк, являющихся словами проги
+{
+  const size_t option_length_max = 128;
+  bool filename_option_found = false;
+  bool root_option_found = false;
+  bool num_threads_option_found = false;
+
+  for (int i = 1; i < argc; i++)
+  {
+    if (strncmp(argv[i], "--path", option_length_max) == 0 and not root_option_found)
+    {
+      if (i + 1 >= argc) 
+        usage();
+      root = argv[++i];
+      root_option_found = true;
+    }
+    else if (strncmp(argv[i], "--num_threads", option_length_max) == 0 and not num_threads_option_found)
+    {
+      if (i + 1 >= argc)
+        usage();
+      if (not cstring_represents_integer(argv[i + 1]))
+        usage();
+      num_threads = atoll(argv[++i]);
+      num_threads_option_found = true;
+    }
+    else if (not filename_option_found)
+    {
+      filename = argv[i];
+      filename_option_found = true;
+    }
+    else
+      usage();
+  }
+
+  if (not filename_option_found)
+    usage();
+}
 
 int main(int argc, char *argv[])
 {
-  fs::path root = "C:\\";
+  setlocale(0, "Rus");
   std::string filename;
-  size_t num_threads = 0;
+  fs::path root = FS_ROOT;
+  size_t num_threads = 10;
+  const size_t num_threads_min = 1;
+  const size_t num_threads_max = 200;
 
   process_args(argc, argv, filename, root, num_threads);
-  FSTree fs_tree(root);
+  if (not(num_threads_min <= num_threads and num_threads <= num_threads_max))
+  {
+    std::cerr << "number of threads must be inside [" + std::to_string(num_threads_min) + "; " +
+                     std::to_string(num_threads_max) + "]"
+              << std::endl;
+    return EXIT_FAILURE;
+  }
+
+  FSTree fs_tree(root, num_threads);
   std::vector<fs::path> paths = fs_tree.find(filename);
   std::cerr << "found " << paths.size() << " file(s)" << std::endl;
   std::cout << paths << std::endl;
