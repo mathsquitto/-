@@ -24,8 +24,6 @@
 #error "Unsupported operating system"
 #endif
 
-//Макрос для проверки является ли наша система виндой СВЕРХУ
-
 namespace fs = std::filesystem;
 
 void sleep_random_ms(size_t sleep_min, size_t sleep_max)
@@ -34,26 +32,20 @@ void sleep_random_ms(size_t sleep_min, size_t sleep_max)
   std::this_thread::sleep_for(ms);
 }
 
-void println_thread_safe(std::ostream &out, const std::string &string) // Принимает ссылку на поток вывода и строку, которую надо напечатать
-                                                                       // Блокирует mutex, чтобы мог печатать только 1 поток
-                                                                       //Печатает и разблокирует
+void println_thread_safe(std::ostream &out, const std::string &string)
 {
-  static std::mutex output_lock; // Чтобы мы могли несколько раз вызвать эту функцию используем static
-  std::lock_guard<std::mutex> lock_guard(output_lock); //Объект шаблонного класса lock_guard, который называется lock_guard. Передаём ему mutex ouput_lock
-                                                       //Вызов конструктора
+  static std::mutex output_lock;
+  std::lock_guard<std::mutex> lock_guard(output_lock);
   out << string << std::endl;
 }
 
-//fs::path &path = Пр-во имён fs, где определён класс path, в котором происходит ссылка &path на объект этого класса, который мы передаём
-
-bool path_get_directory_iterator(const fs::path &path, fs::directory_iterator &it) // Получает итераратор, возвращает true, если удалось его получить
-                                                                                   // Проверка на корректность заданного пути
+bool path_get_directory_iterator(const fs::path &path, fs::directory_iterator &it)
 {
   try
   {
-    it = fs::directory_iterator(path); //Меняем значение объекта, лежащего по ссылке it, на результат созданного объекта конструктором directory_iterator
+    it = fs::directory_iterator(path);
     return true;
-  } //directory_iterator - итератор, который позволяет перебрать все объекты в папке
+  }
   catch (fs::filesystem_error &fs_error)
   {
     println_thread_safe(std::cerr, fs_error.what());
@@ -99,7 +91,7 @@ bool path_is_regular_file(const fs::path &path)
   return false;
 }
 
-bool path_filename_equals(const fs::path &path, const std::string &filename) //Сравнение имён файла по заданного пути с переданной строкой
+bool path_filename_equals(const fs::path &path, const std::string &filename)
 {
   try
   {
@@ -164,7 +156,7 @@ public:
 
   const fs::path &path() const
   {
-    return m_path; //Путь который соответствует данному узлу
+    return m_path;
   }
 
   const std::vector<FSTreeNode *> children() const
@@ -207,8 +199,7 @@ public:
       dirs.pop();
       if (path_is_regular_directory(dir->path()) and path_get_directory_iterator(dir->path(), it_dir))
       {
-        for (const fs::directory_entry &it : it_dir) //directory_entry - один элемент папки. 
-                                                     //Перебираем то,что хранится в it_dir и записываем это  в пр-во имён fs класса directory_entry по ссылке it
+        for (const fs::directory_entry &it : it_dir)
         {
           child = new FSTreeNode(it);
           dir->append_child(child);
@@ -250,8 +241,8 @@ public:
     }
   }
 
-  friend std::ostream &operator<<(std::ostream &out, const FSTree &self) //Дружественная функция, которая возвращает тип ссылки на объект потока вывода и называется <<
-  {                                                                      //Функция печати дерева
+  friend std::ostream &operator<<(std::ostream &out, const FSTree &self)
+  {
     std::queue<const FSTreeNode *> dirs;
     const FSTreeNode *dir;
     fs::directory_iterator it_dir;
@@ -293,7 +284,7 @@ private:
   size_t n_threads;
   std::mutex n_threads_lock;
 
-  void assert_n_threads_valid() //Проверяет кол-во потоков. Если оно стало > максимально возможного, то происходит исключение
+  void assert_n_threads_valid()
   {
     while (not n_threads_lock.try_lock())
       sleep_random_ms(5, 10);
@@ -308,8 +299,6 @@ private:
     std::queue<const FSTreeNode *> dirs;
     std::vector<std::thread> threads;
     fs::path dir;
-
-    //self->assert_n_threads_valid(); -это если захочу проверить не превышается ли кол-во потоков заданный максимум
 
     srand(time(NULL) + std::hash<std::thread::id>{}(std::this_thread::get_id()));
 
@@ -332,7 +321,7 @@ private:
           if (self->n_threads < self->n_threads_max)
           {
             self->n_threads++;
-            threads.push_back(std::thread(_find, self, entry, std::cref(filename), std::ref(results))); //cref и ref - обёртки, которые возвращают конст и неконст ссылки
+            threads.push_back(std::thread(_find, self, entry, std::cref(filename), std::ref(results)));
           }
           else
             dirs.push(entry);
@@ -343,15 +332,14 @@ private:
     for (auto &thread : threads)
     {
       thread.join();
-      std::lock_guard<std::mutex> lock_guard(self->n_threads_lock); //Объект шаблонного класса lock_guard, который называется lock_guard. Передаём ему mutex self->n_threads_lock
-                                                                    //self->n_threads_lock = поле объекта (переменная, принадлежащая этому объекту), на который указывает self
-      self->n_threads--; 
+      std::lock_guard<std::mutex> lock_guard(self->n_threads_lock);
+      self->n_threads--;
     }
   }
 };
 
-std::ostream &operator<<(std::ostream &out, const std::vector<fs::path> vector) //vector<fs::path> vector = Вектор пр-ва имён путей (вектор путей), имеющий имя vector
-{                                                                               //Вектор пути к файлу (то есть может быть несколько путей, если несколько файлов)
+std::ostream &operator<<(std::ostream &out, const std::vector<fs::path> vector)
+{
   size_t i = 0;
   for (i = 0; i + 1 < vector.size(); i++)
     out << vector[i].string() << "\n";
@@ -360,7 +348,7 @@ std::ostream &operator<<(std::ostream &out, const std::vector<fs::path> vector) 
   return out;
 }
 
-bool cstring_represents_integer(const char *str) //Проверка на то, введено ли в num_threads корректное значение
+bool cstring_represents_integer(const char *str)
 {
   const size_t digits_max = 64;
   size_t i = 0;
@@ -382,8 +370,7 @@ void usage()
   exit(1);
 }
 
-void process_args(int argc, char *argv[], std::string &filename, fs::path &root, size_t &num_threads) //argc - кол-во аргументов для работы проги
-                                                                                                      // argv[] - массив чаровских строк, являющихся словами проги
+void process_args(int argc, char *argv[], std::string &filename, fs::path &root, size_t &num_threads)
 {
   const size_t option_length_max = 128;
   bool filename_option_found = false;
